@@ -50,9 +50,14 @@ attach() {
     #todo find a proper device
     DEVICE="/dev/sdf"
 
-    OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$NODE_NAME" --device "$DEVICE" 2>/dev/null)
-    debug "attach" "aws: $OUTPUT"
+    OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$NODE_NAME" --device "$DEVICE")
+    AWS_EXIT_CODE=$?
+    if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
+        err "{\"status\": \"Failure\", \"message\": \"AWS ERROR: $OUTPUT\"}"
+        exit 1
+    fi
 
+    debug "attach" "aws: $OUTPUT"
 	if [ $? -ne 0 ]; then
 		err "{ \"status\": \"Failure\", \"message\": \"Error mounting volume $VOLUMEID onto node "$NODE_NAME" \"}"
 		exit 1
@@ -69,9 +74,14 @@ isattached() {
 	NODE_NAME=$2
 	VOLUMEID=$(echo ${JSON_PARAMS} | jq -r '.volumeID')
 
-    OUTPUT=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID" 2>/dev/null)
-    debug "isattached" "aws: $OUTPUT"
+    OUTPUT=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID")
+    AWS_EXIT_CODE=$?
+    if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
+        err "{\"status\": \"Failure\", \"message\": \"AWS ERROR: $OUTPUT\"}"
+        exit 1
+    fi
 
+    debug "isattached" "aws: $OUTPUT"
     ATTACH_STATUS=$(echo $OUTPUT | jq -r '.Volumes[].Attachments[].State')
     if [ "$ATTACH_STATUS" = "attached" ]; then
     	log "{\"status\": \"Success\", \"attached\":true}"
@@ -175,10 +185,10 @@ detach() {
 	VOLUMEID=$PV_NAME
 
     debug "detach" "detaching volume: $VOLUMEID"
-    aws ec2 detach-volume --region $REGION --volume-id "$VOLUMEID"
-    DETACH_EXIT_CODE=$?
-    if [ "${DETACH_EXIT_CODE}" -ne "0" ]; then
-        err "{\"status\": \"Failure\", \"message\": \"AWS returned error during detach\"}"
+    OUTPUT=$(aws ec2 detach-volume --region $REGION --volume-id "$VOLUMEID")
+    AWS_EXIT_CODE=$?
+    if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
+        err "{\"status\": \"Failure\", \"message\": \"AWS ERROR: $OUTPUT\"}"
         exit 1
     fi
 
@@ -228,11 +238,8 @@ case "$op" in
 	unmountdevice)
 		unmountdevice $*
 		;;
-	getvolumename)
-		getvolumename $*
-		;;
 	*)
-        log "{ \"status\": \"Not supported: $op $@\" }"
+        log "{ \"status\": \"Not supported\" }"
         exit 0
 esac
 
