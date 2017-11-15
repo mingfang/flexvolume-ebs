@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+apt-get install -y python-pip groff
+pip install --upgrade pip
+pip install awscli
+
