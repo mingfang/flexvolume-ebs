@@ -1,7 +1,9 @@
 #!/bin/bash
 
 # Notes:
-#  - Please install "jq" package before using this driver.
+# Requires: aws cli, jq
+# $REGION must be set
+
 usage() {
 	err "Invalid usage. Usage: "
 	err "\t$0 init"
@@ -15,18 +17,18 @@ usage() {
 }
 
 err() {
-	debug "failure status" "$*"
+	debug "ERROR $*"
 	echo -ne $* 1>&2
 }
 
 log() {
-	debug "success status" "$*"
+	debug "$*"
 	echo -ne $* >&1
 }
 
 # log file
 debug() {
-    printf "%s - %s - %s - %s\n" "$(date +"%Y-%m-%d %H:%M:%S")" "$1" "${VOLUMEID}" "$2" >> /var/log/flex-ebs.log
+    echo "$(date) $*" >> /var/log/flex-ebs.log
 }
 
 #private
@@ -41,14 +43,14 @@ ismounted() {
 
 #called on master
 attach() {
-    debug "attach" "$@"
+	debug "attach $@"
 	JSON_PARAMS=$1
 	NODE_NAME=$2
 	VOLUMEID=$(echo ${JSON_PARAMS} | jq -r '.volumeID')
     #todo find a proper device
     DEVICE="/dev/sdf"
 
-    OUTPUT=$(aws ec2 attach-volume --volume-id "$VOLUMEID" --instance-id "$NODE_NAME" --device "$DEVICE" --debug 2>/dev/null)
+    OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$NODE_NAME" --device "$DEVICE" 2>/dev/null)
     debug "attach" "aws: $OUTPUT"
 
 	if [ $? -ne 0 ]; then
@@ -62,12 +64,12 @@ attach() {
 
 #called on master periodically after calling attach()
 isattached() {
-    debug "isattached" "$@"
+	debug "isattached $@"
 	JSON_PARAMS=$1
 	NODE_NAME=$2
 	VOLUMEID=$(echo ${JSON_PARAMS} | jq -r '.volumeID')
 
-    OUTPUT=$(aws ec2 describe-volumes --volume-ids "$VOLUMEID" 2>/dev/null)
+    OUTPUT=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID" 2>/dev/null)
     debug "isattached" "aws: $OUTPUT"
 
     ATTACH_STATUS=$(echo $OUTPUT | jq -r '.Volumes[].Attachments[].State')
@@ -76,13 +78,13 @@ isattached() {
 	    exit 0
     fi
 
-	err "{\"status\": \"Failure\", \"message\": \"Volume not attached\", \"attached\":False}"
+	err "{\"status\": \"Failure\", \"message\": \"Volume: $VOLUMEID is not attached to: $NODE_NAME\", \"attached\":False}"
 	exit 1
 }
 
 #called on node, DEVICE comes from attach()
 waitforattach() {
-    debug "waitforattach" "$@"
+	debug "waitforattach $@"
     DEVICE=$1
 	JSON_PARAMS=$2
 	VOLUMEID=$(echo ${JSON_PARAMS} | jq -r '.volumeID')
@@ -101,7 +103,7 @@ waitforattach() {
 
 #called on node
 mountdevice() {
-    debug "mountdevice" "$@"
+	debug "mountdevice $@"
 	MNTPATH=$1
 	DEVICE=$2
 	JSON_PARAMS=$3
@@ -140,7 +142,7 @@ mountdevice() {
 
 #called on node
 unmountdevice() {
-    debug "unmountdevice" "$@"
+	debug "unmountdevice $@"
 	MNTPATH=$1
 
 	if [ ! -d ${MNTPATH} ]; then
@@ -165,7 +167,7 @@ unmountdevice() {
 
 #called on master
 detach() {
-    debug "detach" "$@"
+	debug "detach $@"
 #	JSON_PARAMS=$1, should really be same as attach
 	PV_NAME=$1
 	NODE_NAME=$2
@@ -173,7 +175,7 @@ detach() {
 	VOLUMEID=$PV_NAME
 
     debug "detach" "detaching volume: $VOLUMEID"
-    aws ec2 detach-volume --volume-id "$VOLUMEID"
+    aws ec2 detach-volume --region $REGION --volume-id "$VOLUMEID"
     DETACH_EXIT_CODE=$?
     if [ "${DETACH_EXIT_CODE}" -ne "0" ]; then
         err "{\"status\": \"Failure\", \"message\": \"AWS returned error during detach\"}"
@@ -181,6 +183,15 @@ detach() {
     fi
 
 	log "{\"status\": \"Success\"}"
+	exit 0
+}
+
+getvolumename() {
+	debug "getvolumename $@"
+	JSON_PARAMS=$1
+	VOLUMEID=$(echo ${JSON_PARAMS} | jq -r '.volumeID')
+
+	log "{\"status\": \"Success\", \"volumeName\": \"$VOLUMEID\"}"
 	exit 0
 }
 
@@ -217,8 +228,11 @@ case "$op" in
 	unmountdevice)
 		unmountdevice $*
 		;;
+	getvolumename)
+		getvolumename $*
+		;;
 	*)
-        log "{ \"status\": \"Not supported\" }"
+        log "{ \"status\": \"Not supported: $op $@\" }"
         exit 0
 esac
 
