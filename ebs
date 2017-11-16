@@ -47,10 +47,10 @@ attach() {
 	JSON_PARAMS=$1
 	NODE_NAME=$2
 	VOLUMEID=$(echo ${JSON_PARAMS} | jq -r '.volumeID')
-    #todo find a proper device
-    DEVICE="/dev/sdf"
+	ATTACH_DEVICE=$(echo ${JSON_PARAMS} | jq -r '.attachDevice')
+	MOUNT_DEVICE=$(echo ${JSON_PARAMS} | jq -r '.mountDevice')
 
-    OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$NODE_NAME" --device "$DEVICE")
+    OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$NODE_NAME" --device "$ATTACH_DEVICE")
     AWS_EXIT_CODE=$?
     if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
         err "{\"status\": \"Failure\", \"message\": \"AWS ERROR: $OUTPUT\"}"
@@ -63,7 +63,7 @@ attach() {
 		exit 1
 	fi
 
-	log "{\"status\": \"Success\", \"device\":\"${DEVICE}\"}"
+	log "{\"status\": \"Success\", \"device\":\"${MOUNT_DEVICE}\"}"
 	exit 0
 }
 
@@ -81,7 +81,7 @@ isattached() {
         exit 1
     fi
 
-    debug "isattached" "aws: $OUTPUT"
+    #debug "isattached" "aws: $OUTPUT"
     ATTACH_STATUS=$(echo $OUTPUT | jq -r '.Volumes[].Attachments[].State')
     if [ "$ATTACH_STATUS" = "attached" ]; then
     	log "{\"status\": \"Success\", \"attached\":true}"
@@ -111,7 +111,7 @@ waitforattach() {
     exit 1
 }
 
-#called on node
+#called on node, DEVICE comes from attach()
 mountdevice() {
 	debug "mountdevice $@"
 	MNTPATH=$1
@@ -208,7 +208,7 @@ getvolumename() {
 op=$1
 
 if [ "$op" = "init" ]; then
-	debug "init $@"
+	debug "init"
 	log "{\"status\":\"Success\",\"capabilities\":{\"attach\":true}}"
 	exit 0
 fi
