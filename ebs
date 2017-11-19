@@ -53,7 +53,7 @@ attach() {
     OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$NODE_NAME" --device "$ATTACH_DEVICE")
     AWS_EXIT_CODE=$?
     if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
-        err "{\"status\": \"Failure\", \"message\": \"AWS ERROR: $OUTPUT\"}"
+        err "{\"status\": \"Failure\", \"message\": \"$OUTPUT\"}"
         exit 1
     fi
 
@@ -77,7 +77,7 @@ isattached() {
     OUTPUT=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID")
     AWS_EXIT_CODE=$?
     if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
-        err "{\"status\": \"Failure\", \"message\": \"AWS ERROR: $OUTPUT\"}"
+        err "{\"status\": \"Failure\", \"message\": \"$OUTPUT\"}"
         exit 1
     fi
 
@@ -88,7 +88,7 @@ isattached() {
 	    exit 0
     fi
 
-	err "{\"status\": \"Failure\", \"message\": \"Volume: $VOLUMEID is not attached to: $NODE_NAME\", \"attached\":False}"
+	err "{\"status\": \"Failure\", \"message\": \"Volume $VOLUMEID is not attached to $NODE_NAME\", \"attached\":False}"
 	exit 1
 }
 
@@ -107,7 +107,7 @@ waitforattach() {
         fi
     done
 
-    err "{ \"status\": \"Failure\", \"message\": \"volume: ${VOLUMEID} not attached to device: ${DEVICE}\" \"}"
+    err "{ \"status\": \"Failure\", \"message\": \"Volume ${VOLUMEID} not attached to device ${DEVICE}\" \"}"
     exit 1
 }
 
@@ -121,7 +121,7 @@ mountdevice() {
 	FSTYPE=$(echo ${JSON_PARAMS} | jq -r '.["kubernetes.io/fsType"]')
 
 	if [ ! -b "${DEVICE}" ]; then
-		err "{\"status\": \"Failure\", \"message\": \"${DEVICE} does not exist\"}"
+		err "{\"status\": \"Failure\", \"message\": \"Device ${DEVICE} does not exist\"}"
 		exit 1
 	fi
 
@@ -188,7 +188,7 @@ detach() {
     OUTPUT=$(aws ec2 detach-volume --region $REGION --volume-id "$VOLUMEID")
     AWS_EXIT_CODE=$?
     if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
-        err "{\"status\": \"Failure\", \"message\": \"AWS ERROR: $OUTPUT\"}"
+        err "{\"status\": \"Failure\", \"message\": \"$OUTPUT\"}"
         exit 1
     fi
 
