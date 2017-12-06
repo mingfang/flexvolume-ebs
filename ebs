@@ -50,7 +50,9 @@ attach() {
 	ATTACH_DEVICE=$(echo ${JSON_PARAMS} | jq -r '.attachDevice')
 	MOUNT_DEVICE=$(echo ${JSON_PARAMS} | jq -r '.mountDevice')
 
-    OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$NODE_NAME" --device "$ATTACH_DEVICE")
+    INSTANCE_ID=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.ec2.internal" --query 'Reservations[*].Instances[*].InstanceId'|jq -r .[0][0])
+
+    OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$INSTANCE_ID" --device "$ATTACH_DEVICE")
     AWS_EXIT_CODE=$?
     if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
         err "{\"status\": \"Failure\", \"message\": \"$OUTPUT\"}"
@@ -59,7 +61,7 @@ attach() {
 
     debug "attach" "aws: $OUTPUT"
 	if [ $? -ne 0 ]; then
-		err "{ \"status\": \"Failure\", \"message\": \"Error mounting volume $VOLUMEID onto node "$NODE_NAME" \"}"
+		err "{ \"status\": \"Failure\", \"message\": \"Error mounting volume $VOLUMEID onto node/instance ${NODE_NAME}/${INSTANCE_ID}\"}"
 		exit 1
 	fi
 
