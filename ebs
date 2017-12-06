@@ -76,21 +76,15 @@ isattached() {
 	NODE_NAME=$2
 	VOLUMEID=$(echo ${JSON_PARAMS} | jq -r '.volumeID')
 
-    OUTPUT=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID")
-    AWS_EXIT_CODE=$?
-    if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
-        err "{\"status\": \"Failure\", \"message\": \"$OUTPUT\"}"
-        exit 1
-    fi
+    INSTANCE_ID=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.ec2.internal" --query 'Reservations[*].Instances[*].InstanceId'|jq -r .[0][0])
 
-    #debug "isattached" "aws: $OUTPUT"
-    ATTACH_STATUS=$(echo $OUTPUT | jq -r '.Volumes[].Attachments[].State')
-    if [ "$ATTACH_STATUS" = "attached" ]; then
-    	log "{\"status\": \"Success\", \"attached\":true}"
+    ATTACH_STATUS=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID" | jq -r '.Volumes[].Attachments[].InstanceId')
+    if [ "$ATTACH_STATUS" == "$INSTANCE_ID" ]; then
+    	log "{\"status\": \"Success\", \"message\": \"Volume $VOLUMEID is attached to $NODE_NAME\", \"attached\":true}"
 	    exit 0
     fi
 
-	err "{\"status\": \"Failure\", \"message\": \"Volume $VOLUMEID is not attached to $NODE_NAME\", \"attached\":False}"
+	err "{\"status\": \"Failure\", \"message\": \"Volume $VOLUMEID is not attached to $NODE_NAME\", \"attached\":false}"
 	exit 1
 }
 
