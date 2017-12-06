@@ -50,17 +50,10 @@ attach() {
 	ATTACH_DEVICE=$(echo ${JSON_PARAMS} | jq -r '.attachDevice')
 	MOUNT_DEVICE=$(echo ${JSON_PARAMS} | jq -r '.mountDevice')
 
-    INSTANCE_ID=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.ec2.internal" --query 'Reservations[*].Instances[*].InstanceId'|jq -r .[0][0])
-
+    INSTANCE_ID=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.ec2.internal" | jq -r '.Reservations[].Instances[].InstanceId')
     OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$INSTANCE_ID" --device "$ATTACH_DEVICE")
-    AWS_EXIT_CODE=$?
-    if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
-        err "{\"status\": \"Failure\", \"message\": \"$OUTPUT\"}"
-        exit 1
-    fi
-
-    debug "attach" "aws: $OUTPUT"
 	if [ $? -ne 0 ]; then
+	    debug "attach $OUTPUT"
 		err "{ \"status\": \"Failure\", \"message\": \"Error mounting volume $VOLUMEID onto node/instance ${NODE_NAME}/${INSTANCE_ID}\"}"
 		exit 1
 	fi
@@ -180,15 +173,21 @@ detach() {
 	#hack - make sure PV_NAME is also the VOLUMEID
 	VOLUMEID=$PV_NAME
 
-    debug "detach" "detaching volume: $VOLUMEID"
+    #don't detach is state is available
+    STATE=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID" | jq -r '.Volumes[].State')
+    if [ "$STATE" == "available" ]; then
+        log "{\"status\": \"Success\", \"message\": \"Volume "$VOLUMEID" state is $STATE\"}"
+	    exit 0
+    fi
+
     OUTPUT=$(aws ec2 detach-volume --region $REGION --volume-id "$VOLUMEID")
-    AWS_EXIT_CODE=$?
-    if [ "${AWS_EXIT_CODE}" -ne "0" ]; then
-        err "{\"status\": \"Failure\", \"message\": \"$OUTPUT\"}"
+    if [ $? -ne 0 ]; then
+        debug "detach" "$OUTPUT"
+        err "{\"status\": \"Failure\", \"message\": \"Error detaching volume "$VOLUMEID" from $NODE_NAME\"}"
         exit 1
     fi
 
-	log "{\"status\": \"Success\"}"
+	log "{\"status\": \"Success\", \"message\": \"Volume $VOLUMEID detached from $NODE_NAME\"}"
 	exit 0
 }
 
