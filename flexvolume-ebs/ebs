@@ -33,16 +33,6 @@ debug() {
   echo "$(date) $*" >> /var/log/flex-ebs.log
 }
 
-#private
-ismounted() {
-  MOUNT=`findmnt -n ${MNTPATH} 2>/dev/null | cut -d' ' -f1`
-  if [ "${MOUNT}" == "${MNTPATH}" ]; then
-    echo "1"
-  else
-    echo "0"
-  fi
-}
-
 # called on master
 attach() {
   debug "attach $@"
@@ -88,11 +78,12 @@ isattached() {
   NODE_NAME=$2
   VOLUME_NAME=$(echo ${JSON_PARAMS} | jq -r '.["kubernetes.io/pvOrVolumeName"]')
 
-  VOLUMEID=$(aws ec2 describe-volumes --region $REGION --filters "Name=tag-key,Values=Name,Name=tag-value,Values=$VOLUME_NAME" --query 'Volumes[*].VolumeId' --output text)
+  VOLUME_JSON=$(aws ec2 describe-volumes --region $REGION --filters "Name=tag-key,Values=Name,Name=tag-value,Values=$VOLUME_NAME")
+  VOLUMEID=$(echo $VOLUME_JSON | jq -r .Volumes[].VolumeId)
+  ATTACHED_INSTANCE_ID=$(echo $VOLUME_JSON | jq -r .Volumes[].Attachments[].InstanceId)
   INSTANCE_ID=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.*" --query 'Reservations[*].Instances[*].InstanceId'|jq -r .[0][0])
-  ATTACH_STATUS=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID" | jq -r '.Volumes[].Attachments[].InstanceId')
 
-  if [ "$ATTACH_STATUS" == "$INSTANCE_ID" ]; then
+  if [ "$ATTACHED_INSTANCE_ID" == "$INSTANCE_ID" ]; then
     log "{\"status\": \"Success\", \"message\": \"Volume $VOLUME_NAME($VOLUMEID) is attached to $NODE_NAME($INSTANCE_ID)\", \"attached\":true}"
     exit 0
   else
@@ -172,11 +163,6 @@ unmountdevice() {
     log "{\"status\": \"Success\", \"message\": \"Mount ${MNTPATH} Not Found\"}"
     exit 0
   fi
-
-  # if [ $(ismounted) -eq 0 ] ; then
-  #   log "{\"status\": \"Success\", \"message\": \"Mount ${MNTPATH} Not Mounted\"}"
-  #   exit 0
-  # fi
 
   umount ${MNTPATH} &> /dev/null
 
