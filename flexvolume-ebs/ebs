@@ -1,0 +1,275 @@
+#!/bin/bash
+
+# Notes:
+# Requires: aws cli, jq
+# $REGION must be set
+
+NVME_DEVICES=(/dev/nvme1n1 /dev/nvme2n1)
+
+usage() {
+  err "Invalid usage. Usage: "
+  err "\t$0 init"
+  err "\t$0 attach <json params> <nodename>"
+  err "\t$0 detach <mount device> <nodename>"
+  err "\t$0 waitforattach <mount device> <json params>"
+  err "\t$0 mountdevice <mount dir> <mount device> <json params>"
+  err "\t$0 unmountdevice <mount dir>"
+  err "\t$0 isattached <json params> <nodename>"
+  exit 1
+}
+
+err() {
+  debug "ERROR $*"
+  echo -ne $* 1>&2
+}
+
+log() {
+  debug "$*"
+  echo -ne $* >&1
+}
+
+# log file
+debug() {
+  echo "$(date) $*" >> /var/log/flex-ebs.log
+}
+
+#private
+ismounted() {
+  MOUNT=`findmnt -n ${MNTPATH} 2>/dev/null | cut -d' ' -f1`
+  if [ "${MOUNT}" == "${MNTPATH}" ]; then
+    echo "1"
+  else
+    echo "0"
+  fi
+}
+
+# called on master
+attach() {
+  debug "attach $@"
+  JSON_PARAMS=$1
+  NODE_NAME=$2
+  VOLUME_NAME=$(echo ${JSON_PARAMS} | jq -r '.["kubernetes.io/pvOrVolumeName"]')
+  ATTACH_DEVICE=$(echo ${JSON_PARAMS} | jq -r '.attachDevice')
+  MOUNT_DEVICE=$(echo ${JSON_PARAMS} | jq -r '.mountDevice')
+
+  # find volume by Name tag
+  VOLUMEID=$(aws ec2 describe-volumes --region $REGION --filters "Name=tag-key,Values=Name,Name=tag-value,Values=$VOLUME_NAME" --query "Volumes[].VolumeId" --output text)
+
+  # find instance by local dns
+  INSTANCE_JSON=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.*")
+
+  # compute mount device by finding the next attach device
+  LAST_ATTACH_DEVICE=$(echo $INSTANCE_JSON | jq -r .Reservations[].Instances[].BlockDeviceMappings[].DeviceName|sort -r|head -1)
+  # ATTACH_DEVICE=${LAST_ATTACH_DEVICE}
+
+
+  #find attach device name, eg "DeviceName": "/dev/sdf"
+  #aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.*" --query "Reservations[].Instances[].BlockDeviceMappings[?Ebs.VolumeId == 'vol-091d242a7efbbe84e']"
+
+  # do attach
+  INSTANCE_ID=$(echo $INSTANCE_JSON |jq -r .Reservations[].Instances[].InstanceId)
+  # INSTANCE_ID=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.*" --query 'Reservations[].Instances[].InstanceId' --output text)
+  OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$INSTANCE_ID" --device "$ATTACH_DEVICE")
+
+  if [ $? -ne 0 ]; then
+    debug "attach $OUTPUT"
+    err "{ \"status\": \"Failure\", \"message\": \"Error attaching volume $VOLUME_NAME($VOLUMEID) onto node/instance ${NODE_NAME}/${INSTANCE_ID}\"}"
+    exit 1
+  else
+    log "{\"status\": \"Success\", \"device\":\"${MOUNT_DEVICE}\", \"message\": \"Attached volume $VOLUME_NAME($VOLUMEID) onto node/instance ${NODE_NAME}/${INSTANCE_ID}\"}"
+    exit 0
+  fi
+}
+
+#called on master periodically after calling attach()
+isattached() {
+  debug "isattached $@"
+  JSON_PARAMS=$1
+  NODE_NAME=$2
+  VOLUME_NAME=$(echo ${JSON_PARAMS} | jq -r '.["kubernetes.io/pvOrVolumeName"]')
+
+  VOLUMEID=$(aws ec2 describe-volumes --region $REGION --filters "Name=tag-key,Values=Name,Name=tag-value,Values=$VOLUME_NAME" --query 'Volumes[*].VolumeId' --output text)
+  INSTANCE_ID=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.*" --query 'Reservations[*].Instances[*].InstanceId'|jq -r .[0][0])
+  ATTACH_STATUS=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID" | jq -r '.Volumes[].Attachments[].InstanceId')
+
+  if [ "$ATTACH_STATUS" == "$INSTANCE_ID" ]; then
+    log "{\"status\": \"Success\", \"message\": \"Volume $VOLUME_NAME($VOLUMEID) is attached to $NODE_NAME($INSTANCE_ID)\", \"attached\":true}"
+    exit 0
+  else
+    err "{\"status\": \"Failure\", \"message\": \"Volume $VOLUME_NAME($VOLUMEID) is not attached to $NODE_NAME($INSTANCE_ID)\", \"attached\":false}"
+    exit 1
+  fi
+}
+
+#called on node, DEVICE comes from attach()
+waitforattach() {
+  debug "waitforattach $@"
+  DEVICE=$1
+  JSON_PARAMS=$2
+  VOLUME_NAME=$(echo ${JSON_PARAMS} | jq -r '.["kubernetes.io/pvOrVolumeName"]')
+
+  end=$((SECONDS+120))
+  while [ $SECONDS -lt $end ]; do
+    if [ -b "$DEVICE" ] ; then
+      log "{\"status\": \"Success\", \"device\":\"${DEVICE}\"}"
+      exit 0
+    fi
+  done
+
+  err "{ \"status\": \"Failure\", \"message\": \"Volume ${VOLUME_NAME} not attached to device ${DEVICE}\" \"}"
+  exit 1
+}
+
+#called on node, DEVICE comes from attach()
+mountdevice() {
+  debug "mountdevice $@"
+  MNTPATH=$1
+  DEVICE=$2
+  JSON_PARAMS=$3
+  VOLUME_NAME=$(echo ${JSON_PARAMS} | jq -r '.["kubernetes.io/pvOrVolumeName"]')
+  FSTYPE=$(echo ${JSON_PARAMS} | jq -r '.["kubernetes.io/fsType"]')
+
+  if [ ! -b "${DEVICE}" ]; then
+    err "{\"status\": \"Failure\", \"message\": \"Device ${DEVICE} Not Found\"}"
+    exit 1
+  fi
+
+  if [ $(ismounted) -eq 1 ] ; then
+    log "{\"status\": \"Success\"}"
+    exit 0
+  fi
+
+  VOLFSTYPE=`blkid -o udev ${DEVICE} 2>/dev/null`
+  if [ "${VOLFSTYPE}" == "" ]; then
+    mkfs.${FSTYPE} -f ${DEVICE} >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+      err "{ \"status\": \"Failure\", \"message\": \"Error Calling mkfs.${FSTYPE} -f ${DEVICE}\"}"
+      exit 1
+    fi
+  fi
+
+  mkdir -p ${MNTPATH} &> /dev/null
+  mount -t ${FSTYPE} ${DEVICE} ${MNTPATH} &> /dev/null
+  if [ "${FSTYPE}" == "xfs" ]; then
+    xfs_growfs ${MNTPATH} &> /dev/null
+  fi
+
+  if [ $? -ne 0 ]; then
+    err "{ \"status\": \"Failure\", \"message\": \"Error Calling mount -t ${FSTYPE} ${DEVICE} ${MNTPATH}\"}"
+    exit 1
+  else
+    log "{\"status\": \"Success\", \"message\": \"Successfully Called mount -t ${FSTYPE} ${DEVICE} ${MNTPATH}\"}"
+    exit 0
+  fi
+}
+
+#called on node
+unmountdevice() {
+  debug "unmountdevice $@"
+  MNTPATH=$1
+
+  if [ ! -d ${MNTPATH} ]; then
+    log "{\"status\": \"Success\", \"message\": \"Mount ${MNTPATH} Not Found\"}"
+    exit 0
+  fi
+
+  # if [ $(ismounted) -eq 0 ] ; then
+  #   log "{\"status\": \"Success\", \"message\": \"Mount ${MNTPATH} Not Mounted\"}"
+  #   exit 0
+  # fi
+
+  umount ${MNTPATH} &> /dev/null
+
+  if [ $? -ne 0 ]; then
+    err "{ \"status\": \"Failed\", \"message\": \"Error Calling umount ${MNTPATH}\"}"
+    exit 1
+  else
+    log "{\"status\": \"Success\", \"message\": \"Successfully Called umount ${MNTPATH}\"}"
+    exit 0
+  fi
+}
+
+#called on master
+detach() {
+  debug "detach $@"
+  #JSON_PARAMS=$1, should really be same as attach
+  PV_NAME=$1
+  NODE_NAME=$2
+  #hack - make sure PV_NAME is also the VOLUME_NAME
+  VOLUME_NAME=$PV_NAME
+
+  #find volume by Name tag
+  VOLUMEID=$(aws ec2 describe-volumes --region $REGION --filters "Name=tag-key,Values=Name,Name=tag-value,Values=$VOLUME_NAME" --query 'Volumes[*].VolumeId' --output text)
+
+  #don't detach if state is available
+  STATE=$(aws ec2 describe-volumes --region $REGION --volume-ids "$VOLUMEID" | jq -r '.Volumes[].State')
+  if [ "$STATE" == "available" ]; then
+    log "{\"status\": \"Success\", \"message\": \"Volume $VOLUME_NAME($VOLUMEID) state is $STATE\"}"
+    exit 0
+  fi
+
+  OUTPUT=$(aws ec2 detach-volume --region $REGION --volume-id "$VOLUMEID")
+
+  if [ $? -ne 0 ]; then
+    debug "detach" "$OUTPUT"
+    err "{\"status\": \"Failure\", \"message\": \"Error detaching volume $VOLUME_NAME($VOLUMEID) from $NODE_NAME\"}"
+    exit 1
+  else
+    log "{\"status\": \"Success\", \"message\": \"Volume $VOLUME_NAME($VOLUMEID) detached from $NODE_NAME\"}"
+    exit 0
+  fi
+
+}
+
+getvolumename() {
+  debug "getvolumename $@"
+  JSON_PARAMS=$1
+  VOLUME_NAME=$(echo ${JSON_PARAMS} | jq -r '.["kubernetes.io/pvOrVolumeName"]')
+
+  log "{\"status\": \"Success\", \"volumeName\": \"$VOLUME_NAME\"}"
+  exit 0
+}
+
+op=$1
+
+if [ "$op" = "init" ]; then
+  debug "init"
+  log "{\"status\":\"Success\",\"capabilities\":{\"attach\":true}}"
+  exit 0
+fi
+
+if [ $# -lt 2 ]; then
+  usage
+fi
+
+shift
+
+case "$op" in
+  attach)
+    attach $*
+    ;;
+  detach)
+    detach $*
+    ;;
+  waitforattach)
+    waitforattach $*
+    ;;
+  isattached)
+    isattached $*
+    ;;
+  mountdevice)
+    mountdevice $*
+    ;;
+  unmountdevice)
+    unmountdevice $*
+    ;;
+  # getvolumename)
+  #   getvolumename $*
+  #   ;;
+  *)
+    debug "$op"
+    log "{ \"status\": \"Not supported\" }"
+    exit 0
+esac
+
+exit 1

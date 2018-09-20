@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# Notes:
+# Requires: docker
+# $REGION must be set
+
+exec docker run -e REGION=$REGION --privileged=true --net host -v /dev:/dev -v /var/lib/kubelet/plugins/kubernetes.io/flexvolume:/var/lib/kubelet/plugins/kubernetes.io/flexvolume:rw,shared -v /var/log:/var/log --rm -t registry.rebelsoft.com/flexvolume-ebs $*

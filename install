@@ -2,4 +2,3 @@
 
 apt-get install -y python-pip groff
 pip install awscli
-
