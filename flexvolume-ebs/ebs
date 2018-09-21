@@ -39,33 +39,27 @@ attach() {
   JSON_PARAMS=$1
   NODE_NAME=$2
   VOLUME_NAME=$(echo ${JSON_PARAMS} | jq -r '.["kubernetes.io/pvOrVolumeName"]')
-  ATTACH_DEVICE=$(echo ${JSON_PARAMS} | jq -r '.attachDevice')
 
   # find volume by Name tag
   VOLUMEID=$(aws ec2 describe-volumes --region $REGION --filters "Name=tag-key,Values=Name,Name=tag-value,Values=$VOLUME_NAME" --query "Volumes[].VolumeId" --output text)
-
   # find instance by local dns
   INSTANCE_JSON=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.*")
 
-  # compute mount device by finding the next attach device
-  LAST_ATTACH_DEVICE=$(echo $INSTANCE_JSON | jq -r .Reservations[].Instances[].BlockDeviceMappings[].DeviceName|sort -r|head -1)
-  # ATTACH_DEVICE=${LAST_ATTACH_DEVICE}
-
-
-  #find attach device name, eg "DeviceName": "/dev/sdf"
-  #aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.*" --query "Reservations[].Instances[].BlockDeviceMappings[?Ebs.VolumeId == 'vol-091d242a7efbbe84e']"
+  # compute next attach device
+  ALL_DEVICES=$(printf "%s\n" {/dev/sdf,/dev/sdg,/dev/sdh,/dev/sdi,/dev/sdj,/dev/sdk,/dev/sdl} | sort)
+  EXISTING_DEVICES=$(echo $INSTANCE_JSON | jq -r .Reservations[].Instances[].BlockDeviceMappings[].DeviceName | sort)
+  ATTACH_DEVICE=$(comm -23 <(echo -e "$ALL_DEVICES") <(echo -e "$EXISTING_DEVICES") | head -1)
 
   # do attach
   INSTANCE_ID=$(echo $INSTANCE_JSON |jq -r .Reservations[].Instances[].InstanceId)
-  # INSTANCE_ID=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.*" --query 'Reservations[].Instances[].InstanceId' --output text)
   OUTPUT=$(aws ec2 attach-volume --region $REGION --volume-id "$VOLUMEID" --instance-id "$INSTANCE_ID" --device "$ATTACH_DEVICE")
 
   if [ $? -ne 0 ]; then
     debug "attach $OUTPUT"
-    err "{ \"status\": \"Failure\", \"message\": \"Error attaching volume $VOLUME_NAME($VOLUMEID) onto node/instance ${NODE_NAME}/${INSTANCE_ID}\"}"
+    err "{ \"status\": \"Failure\", \"message\": \"Error Attaching $VOLUME_NAME($VOLUMEID) As $ATTACH_DEVICE To ${NODE_NAME}/${INSTANCE_ID}\"}"
     exit 1
   else
-    log "{\"status\": \"Success\", \"device\":\"${VOLUMEID}\", \"message\": \"Attached volume $VOLUME_NAME($VOLUMEID) onto node/instance ${NODE_NAME}/${INSTANCE_ID}\"}"
+    log "{\"status\": \"Success\", \"device\":\"${VOLUMEID}\", \"message\": \"Attached $VOLUME_NAME($VOLUMEID) As $ATTACH_DEVICE To ${NODE_NAME}/${INSTANCE_ID}\"}"
     exit 0
   fi
 }
@@ -80,18 +74,19 @@ isattached() {
   VOLUME_JSON=$(aws ec2 describe-volumes --region $REGION --filters "Name=tag-key,Values=Name,Name=tag-value,Values=$VOLUME_NAME")
   VOLUMEID=$(echo $VOLUME_JSON | jq -r .Volumes[].VolumeId)
   ATTACHED_INSTANCE_ID=$(echo $VOLUME_JSON | jq -r .Volumes[].Attachments[].InstanceId)
+  ATTACHED_DEVICE=$(echo $VOLUME_JSON | jq -r .Volumes[].Attachments[].Device)
   INSTANCE_ID=$(aws ec2 describe-instances --region $REGION --filters "Name=private-dns-name,Values=${NODE_NAME}.*" --query 'Reservations[*].Instances[*].InstanceId'|jq -r .[0][0])
 
   if [ "$ATTACHED_INSTANCE_ID" == "$INSTANCE_ID" ]; then
-    log "{\"status\": \"Success\", \"message\": \"Volume $VOLUME_NAME($VOLUMEID) is attached to $NODE_NAME($INSTANCE_ID)\", \"attached\":true}"
+    log "{\"status\": \"Success\", \"attached\":true, \"message\": \"Volume $VOLUME_NAME($VOLUMEID) Attached As $ATTACHED_DEVICE To $NODE_NAME($INSTANCE_ID)\"}"
     exit 0
   else
-    err "{\"status\": \"Failure\", \"message\": \"Volume $VOLUME_NAME($VOLUMEID) is not attached to $NODE_NAME($INSTANCE_ID)\", \"attached\":false}"
+    err "{\"status\": \"Failure\", \"attached\":false, \"message\": \"Volume $VOLUME_NAME($VOLUMEID) Not Attached To $NODE_NAME($INSTANCE_ID)\"}"
     exit 1
   fi
 }
 
-#called on node, DEVICE comes from attach()
+#called on node, VOLUMEID comes from attach() DEVICE field
 waitforattach() {
   debug "waitforattach $@"
   VOLUMEID=$1
