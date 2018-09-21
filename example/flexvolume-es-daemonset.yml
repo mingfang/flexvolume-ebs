@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: flexvolume-ebs
+spec:
+  selector:
+    matchLabels:
+      daemonset: flexvolume-ebs
+  template:
+    metadata:
+      labels:
+        daemonset: flexvolume-ebs
+        name: flexvolume-ebs
+      name: flexvolume-ebs
+    spec:
+      containers:
+      - name: flexvolume-ebs
+        image: registry.rebelsoft.com/flexvolume-ebs:latest
+        command:
+        - /install.sh
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /volumeplugins
+          name: volumeplugins
+      volumes:
+      - name: volumeplugins
+        hostPath:
+          path: /var/lib/kubelet/volumeplugins
+      tolerations:
+      - effect: NoSchedule
+        key: dedicated
+        operator: Equal
+        value: master
